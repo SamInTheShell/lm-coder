@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdir, readdir, readFile, writeFile, stat, rm } from "fs/promises";
 import { expandPath } from "./pathUtils";
+import { existsSync } from "fs";
 
 export interface ChangeEntry {
   id: string; // Timestamp-based unique ID
@@ -38,6 +39,14 @@ export interface RemoveDetails {
   }>;
 }
 
+export interface ProjectMetadata {
+  projectPath: string; // Original project path (with ~ if user provided it that way)
+  absolutePath: string; // Fully resolved absolute path
+  hash: string; // The hash used for this directory
+  createdAt: string; // ISO timestamp of when this metadata was created
+  lastAccessedAt: string; // ISO timestamp of last access
+}
+
 /**
  * Generate a hash from the absolute project path
  */
@@ -55,11 +64,44 @@ export function getHistoryDir(projectPath: string): string {
 }
 
 /**
- * Ensure history directory exists
+ * Get or create project metadata
+ */
+async function getOrCreateMetadata(projectPath: string, historyDir: string): Promise<void> {
+  const metadataPath = join(historyDir, "_metadata.json");
+  const absolutePath = resolve(expandPath(projectPath));
+  const hash = getProjectHash(projectPath);
+
+  if (existsSync(metadataPath)) {
+    // Update last accessed time
+    try {
+      const existing = JSON.parse(await readFile(metadataPath, "utf-8"));
+      existing.lastAccessedAt = new Date().toISOString();
+      await writeFile(metadataPath, JSON.stringify(existing, null, 2), "utf-8");
+    } catch {
+      // If we can't read/update, we'll recreate it below
+    }
+  }
+
+  // Create new metadata if it doesn't exist or couldn't be updated
+  if (!existsSync(metadataPath)) {
+    const metadata: ProjectMetadata = {
+      projectPath,
+      absolutePath,
+      hash,
+      createdAt: new Date().toISOString(),
+      lastAccessedAt: new Date().toISOString(),
+    };
+    await writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf-8");
+  }
+}
+
+/**
+ * Ensure history directory exists and metadata is up to date
  */
 export async function ensureHistoryDir(projectPath: string): Promise<string> {
   const historyDir = getHistoryDir(projectPath);
   await mkdir(historyDir, { recursive: true });
+  await getOrCreateMetadata(projectPath, historyDir);
   return historyDir;
 }
 
@@ -102,7 +144,7 @@ export async function listChanges(
     }
 
     const files = await readdir(historyDir);
-    const jsonFiles = files.filter(f => f.endsWith(".json"));
+    const jsonFiles = files.filter(f => f.endsWith(".json") && f !== "_metadata.json");
 
     // Read all entries
     const entries: ChangeEntry[] = [];
@@ -156,8 +198,27 @@ export async function getChangeCount(projectPath: string): Promise<number> {
     }
 
     const files = await readdir(historyDir);
-    return files.filter(f => f.endsWith(".json")).length;
+    return files.filter(f => f.endsWith(".json") && f !== "_metadata.json").length;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Get project metadata
+ */
+export async function getProjectMetadata(projectPath: string): Promise<ProjectMetadata | null> {
+  try {
+    const historyDir = getHistoryDir(projectPath);
+    const metadataPath = join(historyDir, "_metadata.json");
+
+    if (!existsSync(metadataPath)) {
+      return null;
+    }
+
+    const content = await readFile(metadataPath, "utf-8");
+    return JSON.parse(content);
+  } catch {
+    return null;
   }
 }

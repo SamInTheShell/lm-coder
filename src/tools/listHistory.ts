@@ -1,7 +1,7 @@
 import { tool, ToolsProviderController } from "@lmstudio/sdk";
 import { z } from "zod";
 import { configSchematics } from "../configSchematics";
-import { listChanges, getChangeCount } from "./historyUtils";
+import { listChanges, getChangeCount, getProjectMetadata } from "./historyUtils";
 
 export const getListHistoryTool = (ctl: ToolsProviderController) => {
   return tool({
@@ -25,6 +25,7 @@ export const getListHistoryTool = (ctl: ToolsProviderController) => {
       try {
         const changes = await listChanges(projectPath, effectiveLimit, offset);
         const totalCount = await getChangeCount(projectPath);
+        const metadata = await getProjectMetadata(projectPath);
 
         if (changes.length === 0) {
           if (offset === 0) {
@@ -32,6 +33,15 @@ export const getListHistoryTool = (ctl: ToolsProviderController) => {
           } else {
             return "No more changes found.";
           }
+        }
+
+        // Add project info header if this is the first page
+        let output = "";
+        if (offset === 0 && metadata) {
+          output += `Project: ${metadata.absolutePath}\n`;
+          output += `History created: ${new Date(metadata.createdAt).toLocaleString()}\n`;
+          output += `Last accessed: ${new Date(metadata.lastAccessedAt).toLocaleString()}\n\n`;
+          output += "--- Change History ---\n\n";
         }
 
         // Format the output
@@ -47,11 +57,11 @@ export const getListHistoryTool = (ctl: ToolsProviderController) => {
    Message: ${change.message}`;
         });
 
-        const output = entries.join("\n\n");
+        output += entries.join("\n\n");
 
         const rangeStart = offset + 1;
         const rangeEnd = offset + changes.length;
-        const summary = `\nShowing changes ${rangeStart}-${rangeEnd} of ${totalCount} total.`;
+        const summary = `\n\nShowing changes ${rangeStart}-${rangeEnd} of ${totalCount} total.`;
 
         if (rangeEnd < totalCount) {
           return output + summary + `\nUse offset=${rangeEnd} to see more.`;
