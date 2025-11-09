@@ -3,7 +3,60 @@ import { z } from "zod";
 import { configSchematics } from "../configSchematics";
 import { validatePath, toRelativePath } from "./pathUtils";
 import { readdir, readFile } from "fs/promises";
-import { join } from "path";
+import { join, relative, sep } from "path";
+
+/**
+ * Parse .gitignore file and return patterns
+ */
+async function parseGitignore(gitignorePath: string): Promise<string[]> {
+        try {
+                const content = await readFile(gitignorePath, "utf-8");
+                return content
+                        .split("\n")
+                        .map((line) => line.trim())
+                        .filter((line) => line && !line.startsWith("#"));
+        } catch {
+                return [];
+        }
+}
+
+/**
+ * Check if a path should be ignored based on gitignore patterns
+ */
+function shouldIgnore(
+        path: string,
+        projectPath: string,
+        gitignorePatterns: string[],
+): boolean {
+        const relativePath = relative(projectPath, path);
+        const pathParts = relativePath.split(sep);
+
+        for (const pattern of gitignorePatterns) {
+                // Handle directory patterns (ending with /)
+                if (pattern.endsWith("/")) {
+                        const dirPattern = pattern.slice(0, -1);
+                        if (pathParts.includes(dirPattern)) {
+                                return true;
+                        }
+                }
+                // Handle exact matches
+                else if (pathParts.includes(pattern)) {
+                        return true;
+                }
+                // Handle wildcard patterns
+                else if (pattern.includes("*")) {
+                        const regexPattern = pattern
+                                .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+                                .replace(/\*/g, ".*");
+                        const regex = new RegExp(`^${regexPattern}$`);
+                        if (pathParts.some((part) => regex.test(part))) {
+                                return true;
+                        }
+                }
+        }
+
+        return false;
+}
 
 /**
  * Check if a filename matches a glob pattern
@@ -24,6 +77,7 @@ async function searchTextRecursive(
         pattern: string,
         includeGlob: string | undefined,
         projectRoot: string,
+        gitignorePatterns: string[],
         results: Array<{ file: string; line: number; content: string }>,
 ): Promise<void> {
         try {
@@ -32,12 +86,23 @@ async function searchTextRecursive(
                 for (const entry of entries) {
                         const fullPath = join(dir, entry.name);
 
+                        // Skip if path should be ignored by .gitignore
+                        if (shouldIgnore(fullPath, projectRoot, gitignorePatterns)) {
+                                continue;
+                        }
+
                         if (entry.isDirectory()) {
+                                // Skip .git directories entirely (don't even show them in search results)
+                                if (entry.name === ".git") {
+                                        continue;
+                                }
+
                                 await searchTextRecursive(
                                         fullPath,
                                         pattern,
                                         includeGlob,
                                         projectRoot,
+                                        gitignorePatterns,
                                         results,
                                 );
                         } else if (entry.isFile()) {
@@ -102,6 +167,10 @@ export const getSearchTextTool = (ctl: ToolsProviderController) => {
                         }
 
                         try {
+                                // Load .gitignore patterns
+                                const gitignorePath = join(projectPath, ".gitignore");
+                                const gitignorePatterns = await parseGitignore(gitignorePath);
+
                                 const results: Array<{ file: string; line: number; content: string }> =
                                         [];
 
@@ -109,7 +178,8 @@ export const getSearchTextTool = (ctl: ToolsProviderController) => {
                                         validation.path,
                                         pattern,
                                         include,
-                                        "",
+                                        projectPath,
+                                        gitignorePatterns,
                                         results,
                                 );
 
